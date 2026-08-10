@@ -1,0 +1,24 @@
+name: Feature proposal
+description: Propose an evidence-led workflow improvement.
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and affected operator
+    validations:
+      required: true
+  - type: textarea
+    id: postcondition
+    attributes:
+      label: Observable postcondition
+      description: Explain how the system can verify success rather than merely accept a request.
+    validations:
+      required: true
+  - type: textarea
+    id: failure
+    attributes:
+      label: Failure and replay semantics
+    validations:
+      required: true

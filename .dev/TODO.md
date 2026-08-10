@@ -7,4 +7,4 @@
 - [x] Add verification suite and demo.
 - [x] Complete public docs and CI.
 - [x] Pass local release gates.
-- [ ] Publish and verify v0.1.0.
+- [x] Publish and verify v0.1.0.

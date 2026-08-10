@@ -27,6 +27,10 @@ OffboardProof v0.1.0 is a local-first, verification-first employee offboarding e
 - Dependency audit: no known vulnerabilities.
 - Tracked-source secret scan: no findings.
 - Synthetic demo: five controls satisfied; duplicate trigger suppressed; transient failure recovered; case completed; 18-event audit chain valid; evidence written with SHA-256 digest.
+- GitHub CI quality and installed-wheel jobs: passed.
+- GitHub CodeQL analysis: passed.
+- GitHub license detection: Apache-2.0.
+- Dependabot security updates, secret scanning, push protection, and private vulnerability reporting: enabled.
 
 ## Assurance and measurement limits
 
@@ -41,4 +45,6 @@ External writes are disabled by default. Production operators must supply TLS/re
 Target repository: https://github.com/DevFoundry-labs/offboardproof
 Target release: https://github.com/DevFoundry-labs/offboardproof/releases/tag/v0.1.0
 
-Remote CI and release verification are recorded in the repository/release after publication.
+Verified CI run: https://github.com/DevFoundry-labs/offboardproof/actions/runs/31381005687
+
+Verified CodeQL run: https://github.com/DevFoundry-labs/offboardproof/actions/runs/31381005714

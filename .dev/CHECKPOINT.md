@@ -6,7 +6,7 @@ OffboardProof v0.1.0
 
 ## Current phase
 
-Local release complete; remote publication in progress.
+Release-ready public repository; v0.1.0 publication is the final atomic step.
 
 ## Completed and verified
 
@@ -33,7 +33,7 @@ No audited dependency vulnerabilities or tracked-source secret findings. Externa
 
 ## Current blocker
 
-None. Remote CI and release verification are the next exact actions.
+None. CI and CodeQL are green on the current workflow revision.
 
 ## Do not repeat
 

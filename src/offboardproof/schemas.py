@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -20,11 +20,22 @@ class CaseCreate(StrictModel):
     effective_at: datetime
     risk_tier: RiskTier = RiskTier.STANDARD
     provider: str = Field(default="mock", pattern=r"^[a-z][a-z0-9_-]{1,31}$")
+    retention_until: datetime | None = None
+    retention_policy_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._~-]{1,128}$")
 
     @field_validator("subject_email", "transfer_owner")
     @classmethod
     def validate_email(cls, value: str) -> str:
         return normalize_email(value)
+
+    @field_validator("retention_until")
+    @classmethod
+    def validate_retention_until(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("retention_until must include an explicit UTC offset")
+        return value.astimezone(UTC)
 
 
 class ApprovalCreate(StrictModel):
@@ -44,6 +55,14 @@ class WaiverCreate(StrictModel):
 
 class RequeueCreate(StrictModel):
     resolution_note: str = Field(min_length=5, max_length=1000)
+
+
+class LegalHoldCreate(StrictModel):
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+class LegalHoldRelease(StrictModel):
+    reason: str = Field(min_length=10, max_length=1000)
 
 
 class ActorView(StrictModel):

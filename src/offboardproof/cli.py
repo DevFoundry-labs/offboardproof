@@ -13,12 +13,17 @@ import uvicorn
 from offboardproof.api import create_app
 from offboardproof.audit import append_event, verify_chain
 from offboardproof.auth import Actor, authenticate, create_actor
+from offboardproof.backup import BackupService
 from offboardproof.config import Settings
 from offboardproof.db import connection_for, migrate, transaction
 from offboardproof.enums import ApprovalDecision, RiskTier, Role
 from offboardproof.evidence import build_evidence, write_evidence
+from offboardproof.evidence_signing import load_signing_key, write_public_key
+from offboardproof.evidence_v2 import write_evidence_v2
+from offboardproof.evidence_verification import EvidenceVerificationError, verify_evidence_v2
 from offboardproof.logging_config import configure_logging
 from offboardproof.providers.mock import MockProvider
+from offboardproof.retention import RetentionService
 from offboardproof.schemas import CaseCreate
 from offboardproof.service import WorkflowService
 from offboardproof.worker import Worker
@@ -235,6 +240,54 @@ def evidence_export(
         connection.close()
 
 
+@app.command("evidence-export-v2")
+def evidence_export_v2(
+    case_id: Annotated[str, typer.Argument()],
+    database: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    settings = _settings(database)
+    migrate(settings)
+    connection = connection_for(settings)
+    try:
+        evidence_path, manifest_path, digest = write_evidence_v2(connection, settings, case_id)
+        _print(
+            {
+                "evidence": str(evidence_path),
+                "manifest": str(manifest_path),
+                "evidence_sha256": digest,
+            }
+        )
+    finally:
+        connection.close()
+
+
+@app.command("evidence-public-key-export")
+def evidence_public_key_export(
+    output: Annotated[Path, typer.Option(help="New or replacement public-key PEM file.")],
+) -> None:
+    signing_key = load_signing_key(Settings())
+    if signing_key is None:
+        raise typer.BadParameter("Signing is not configured")
+    output = output.resolve()
+    if output.exists() and not output.is_file():
+        raise typer.BadParameter("Output must be a file path")
+    write_public_key(signing_key, output)
+    _print({"output": str(output), "key_id": signing_key.key_id})
+
+
+@app.command("evidence-verify")
+def evidence_verify(
+    evidence: Annotated[Path, typer.Option(help="Canonical evidence v2 JSON file.")],
+    manifest: Annotated[Path, typer.Option(help="Detached evidence manifest JSON file.")],
+    trusted_public_key: Annotated[Path, typer.Option(help="Operator-trusted Ed25519 public key.")],
+) -> None:
+    try:
+        _print(verify_evidence_v2(evidence, manifest, trusted_public_key))
+    except EvidenceVerificationError as exc:
+        _print(exc.result)
+        raise typer.Exit(code=exc.exit_code) from exc
+
+
 @app.command("audit-verify")
 def audit_verify(
     database: Annotated[Path | None, typer.Option()] = None,
@@ -248,6 +301,49 @@ def audit_verify(
             raise typer.Exit(code=2)
     finally:
         connection.close()
+
+
+@app.command("retention-report")
+def retention_report(
+    as_of: Annotated[str | None, typer.Option(help="ISO-8601 timestamp; defaults to now.")] = None,
+    database: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    settings = _settings(database)
+    migrate(settings)
+    report_time = datetime.fromisoformat(as_of.replace("Z", "+00:00")) if as_of else datetime.now(UTC)
+    if report_time.tzinfo is None:
+        raise typer.BadParameter("--as-of must include a UTC offset")
+    _print(RetentionService(settings).report(_actor(settings), report_time))
+
+
+@app.command("backup-create")
+def backup_create(
+    destination: Annotated[Path, typer.Option(help="New or empty backup directory outside the repository.")],
+    database: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    settings = _settings(database)
+    migrate(settings)
+    _print(BackupService(settings).create(_actor(settings), destination))
+
+
+@app.command("backup-verify")
+def backup_verify(
+    backup: Annotated[Path, typer.Option(help="Backup directory to verify without mutation.")],
+    database: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    settings = _settings(database)
+    _print(BackupService(settings).verify(backup).as_dict())
+
+
+@app.command("restore-verify")
+def restore_verify(
+    backup: Annotated[Path, typer.Option(help="Verified backup directory.")],
+    scratch: Annotated[Path, typer.Option(help="New or empty scratch restore directory.")],
+    migrate_schema: Annotated[bool, typer.Option(help="Migrate the scratch database after restoration.")] = False,
+    database: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    settings = _settings(database)
+    _print(BackupService(settings).restore_verify(backup, scratch, migrate_schema=migrate_schema))
 
 
 @app.command("serve")

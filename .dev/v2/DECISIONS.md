@@ -1,6 +1,12 @@
 # V2 Working Decisions
 
-These are planning assumptions adopted on 2026-08-17 so contract work can continue. They are reversible before GitHub issues or production code are created.
+These decisions began as planning assumptions on 2026-08-17 and are updated as implementation and discovery progress.
+
+## V2-005: Engineering may proceed at risk without treating M0 as passed
+
+Decision: The product owner explicitly directed full V2 continuation on 2026-08-20. Engineering may implement and verify the generic committed slices before discovery completes, but the project must not fabricate interviews, claim pilot validation, expand conditional provider scope, or publish ROI/compliance claims.
+
+Status: accepted for engineering; M0 remains an open pilot and release-evidence gate.
 
 ## V2-001: Treat V2 as v0.2.0
 

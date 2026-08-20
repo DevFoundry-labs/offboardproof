@@ -25,6 +25,22 @@ class ConfigurationError(OffboardProofError):
     pass
 
 
+class WebhookAuthenticationError(OffboardProofError):
+    pass
+
+
+class PayloadTooLargeError(OffboardProofError):
+    pass
+
+
+class UnsupportedMediaTypeError(OffboardProofError):
+    pass
+
+
+class WebhookValidationError(OffboardProofError):
+    pass
+
+
 class ProviderError(OffboardProofError):
     def __init__(
         self,

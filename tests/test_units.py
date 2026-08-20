@@ -8,7 +8,7 @@ from hypothesis import strategies as st
 
 from offboardproof.auth import authenticate, create_actor
 from offboardproof.config import Settings
-from offboardproof.db import connection_for, migrate
+from offboardproof.db import SCHEMA_VERSION, connection_for, migrate
 from offboardproof.enums import Role
 from offboardproof.errors import AuthorizationError, ConfigurationError
 from offboardproof.providers.factory import get_provider
@@ -32,8 +32,8 @@ def test_email_and_time_normalization() -> None:
 
 def test_authentication_and_migration(tmp_path) -> None:  # type: ignore[no-untyped-def]
     settings = Settings(database_path=tmp_path / "db.sqlite", evidence_dir=tmp_path / "evidence")
-    assert migrate(settings) == 1
-    assert migrate(settings) == 1
+    assert migrate(settings) == SCHEMA_VERSION
+    assert migrate(settings) == SCHEMA_VERSION
     connection = connection_for(settings)
     try:
         actor, token = create_actor(connection, "Auditor", Role.AUDITOR)

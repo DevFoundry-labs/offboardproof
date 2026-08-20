@@ -8,7 +8,13 @@ from pathlib import Path
 
 from offboardproof.config import Settings
 
-SCHEMA_VERSION = 1
+MIGRATIONS = {
+    1: "0001_initial.sql",
+    2: "0002_webhook_intake.sql",
+    3: "0003_evidence_v2.sql",
+    4: "0004_retention_operations.sql",
+}
+SCHEMA_VERSION = max(MIGRATIONS)
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -41,7 +47,7 @@ def migrate(settings: Settings) -> int:
         if current > SCHEMA_VERSION:
             raise RuntimeError(f"Database schema version {current} is newer than supported {SCHEMA_VERSION}")
         for version in range(current + 1, SCHEMA_VERSION + 1):
-            migration_path = files("offboardproof").joinpath("migrations", f"{version:04d}_initial.sql")
+            migration_path = files("offboardproof").joinpath("migrations", MIGRATIONS[version])
             sql = migration_path.read_text(encoding="utf-8")
             connection.executescript(sql)
             connection.execute(f"PRAGMA user_version = {version}")

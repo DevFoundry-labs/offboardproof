@@ -5,7 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
-from conftest import World
+from conftest import World, write_owner_only
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from offboardproof.backup import BackupService
@@ -78,7 +78,7 @@ def test_backup_detects_changed_and_unsafe_inventory_entries(world: World) -> No
 def test_signed_backup_verifies_public_trust_material(world: World) -> None:
     private_key = Ed25519PrivateKey.generate()
     key_path = world.settings.database_path.parent / "backup-signing.key"
-    key_path.write_bytes(private_key.private_bytes_raw())
+    write_owner_only(key_path, private_key.private_bytes_raw())
     world.settings.signing_key_file = key_path.resolve()
     world.settings.signing_key_id = "backup-signing-key"
     world.settings.require_signed_evidence = True
@@ -113,7 +113,7 @@ def test_backup_rejects_unsafe_destinations_and_extra_files(world: World) -> Non
 def test_backup_preserves_public_keys_for_historical_rotation(world: World) -> None:
     first_key = Ed25519PrivateKey.generate()
     first_path = world.settings.database_path.parent / "first.key"
-    first_path.write_bytes(first_key.private_bytes_raw())
+    write_owner_only(first_path, first_key.private_bytes_raw())
     world.settings.signing_key_file = first_path.resolve()
     world.settings.signing_key_id = "rotation-first"
     world.settings.require_signed_evidence = True
@@ -121,7 +121,7 @@ def test_backup_preserves_public_keys_for_historical_rotation(world: World) -> N
 
     second_key = Ed25519PrivateKey.generate()
     second_path = world.settings.database_path.parent / "second.key"
-    second_path.write_bytes(second_key.private_bytes_raw())
+    write_owner_only(second_path, second_key.private_bytes_raw())
     world.settings.signing_key_file = second_path.resolve()
     world.settings.signing_key_id = "rotation-second"
     _complete(world, key="backup-rotation-second")

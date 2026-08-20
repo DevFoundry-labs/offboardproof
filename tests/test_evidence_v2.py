@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import World
+from conftest import World, write_owner_only
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -37,12 +37,13 @@ def _complete(world: World, *, key: str) -> str:
 def _configure_key(world: World, tmp_path: Path) -> tuple[Ed25519PrivateKey, Path]:
     private_key = Ed25519PrivateKey.generate()
     key_file = tmp_path / "evidence-signing.key"
-    key_file.write_bytes(
+    write_owner_only(
+        key_file,
         private_key.private_bytes(
             serialization.Encoding.Raw,
             serialization.PrivateFormat.Raw,
             serialization.NoEncryption(),
-        )
+        ),
     )
     world.settings.signing_key_file = key_file.resolve()
     world.settings.signing_key_id = "pilot-2026-q3"
@@ -149,7 +150,7 @@ def test_signing_key_rotation_preserves_historical_manifest(world: World, tmp_pa
 
     replacement = Ed25519PrivateKey.generate()
     replacement_file = tmp_path / "replacement.key"
-    replacement_file.write_bytes(replacement.private_bytes_raw())
+    write_owner_only(replacement_file, replacement.private_bytes_raw())
     replacement_public = tmp_path / "replacement.pub"
     replacement_public.write_bytes(replacement.public_key().public_bytes_raw())
     world.settings.signing_key_file = replacement_file.resolve()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import write_owner_only
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -19,7 +21,7 @@ from offboardproof.webhooks.signature import parse_timestamp, verify_signature
 def test_signing_key_configuration_formats_and_failures(tmp_path: Path) -> None:
     private_key = Ed25519PrivateKey.generate()
     raw_file = tmp_path / "raw.key"
-    raw_file.write_bytes(private_key.private_bytes_raw())
+    write_owner_only(raw_file, private_key.private_bytes_raw())
     settings = Settings(signing_key_file=raw_file.resolve(), signing_key_id="raw-key")
     loaded = load_signing_key(settings)
     assert loaded is not None and loaded.key_id == "raw-key"
@@ -40,21 +42,27 @@ def test_signing_key_configuration_formats_and_failures(tmp_path: Path) -> None:
 
     password = b"correct horse battery staple"
     encrypted = tmp_path / "encrypted.pem"
-    encrypted.write_bytes(
+    write_owner_only(
+        encrypted,
         private_key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.BestAvailableEncryption(password),
-        )
+        ),
     )
     password_file = tmp_path / "password.txt"
-    password_file.write_bytes(password + b"\n")
+    write_owner_only(password_file, password + b"\n")
     encrypted_settings = Settings(
         signing_key_file=encrypted.resolve(),
         signing_key_password_file=password_file.resolve(),
         signing_key_id="encrypted-key",
     )
     assert load_signing_key(encrypted_settings) is not None
+    if os.name != "nt":
+        raw_file.chmod(0o644)
+        with pytest.raises(ConfigurationError, match="permissions"):
+            load_signing_key(settings)
+        raw_file.chmod(0o600)
     password_file.write_text("wrong", encoding="utf-8")
     with pytest.raises(ConfigurationError, match="could not be loaded"):
         load_signing_key(encrypted_settings)

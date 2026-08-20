@@ -5,9 +5,14 @@ The roadmap is evidence-led; items are candidates, not commitments.
 ## Near term
 
 - Design-partner validation of control sets and evidence exports.
-- Signed evidence manifests and configurable retention.
 - Microsoft Entra ID provider contract.
-- Webhook intake with signature verification and replay controls.
+
+## Implemented for v0.2.0
+
+- Signed evidence manifests with explicit external trust anchors.
+- Configurable retention snapshots, legal holds, and dry-run reporting without physical deletion.
+- Webhook intake with signature verification, rotation windows, replay controls, and safe rejection handling.
+- Online backup, inventory verification, and scratch-only restore drills.
 
 ## Later
 

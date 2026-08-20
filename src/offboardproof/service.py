@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from offboardproof.audit import append_event
@@ -19,8 +19,9 @@ from offboardproof.enums import (
     RiskTier,
     Role,
 )
-from offboardproof.errors import ConflictError, InvalidTransitionError, NotFoundError
+from offboardproof.errors import ConfigurationError, ConflictError, InvalidTransitionError, NotFoundError
 from offboardproof.evidence import write_evidence
+from offboardproof.evidence_v2 import write_evidence_v2
 from offboardproof.providers.factory import get_provider
 from offboardproof.schemas import CaseCreate
 from offboardproof.util import canonical_json, iso_now, new_id, normalize_email, sha256_text
@@ -51,52 +52,91 @@ class WorkflowService:
             raise ValueError("Idempotency-Key must be between 8 and 128 characters")
         connection = connection_for(self.settings)
         try:
-            existing = connection.execute(
-                "SELECT id FROM cases WHERE organization_id='local' AND idempotency_key=?",
-                (key,),
-            ).fetchone()
-            if existing:
-                return self.case_view(existing["id"], connection=connection)
-            now = iso_now()
-            case_id = new_id()
             with transaction(connection):
-                connection.execute(
-                    """
-                    INSERT INTO cases
-                    (id, organization_id, idempotency_key, subject_email, subject_name,
-                     transfer_owner, effective_at, risk_tier, provider, state, created_by,
-                     created_at, updated_at)
-                    VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        case_id,
-                        key,
-                        normalize_email(request.subject_email),
-                        request.subject_name.strip(),
-                        normalize_email(request.transfer_owner),
-                        request.effective_at.astimezone(UTC).isoformat(),
-                        request.risk_tier.value,
-                        request.provider,
-                        CaseState.RECEIVED.value,
-                        actor.id,
-                        now,
-                        now,
-                    ),
-                )
-                append_event(
-                    connection,
-                    case_id=case_id,
-                    actor_id=actor.id,
-                    event_type="case.received",
-                    payload={
-                        "idempotency_key": key,
-                        "provider": request.provider,
-                        "risk_tier": request.risk_tier.value,
-                    },
-                )
+                case_id = self.create_case_in_transaction(connection, actor, request, key)
             return self.case_view(case_id, connection=connection)
         finally:
             connection.close()
+
+    def create_case_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        actor: Actor,
+        request: CaseCreate,
+        idempotency_key: str,
+    ) -> str:
+        """Create or find a case inside the caller's transaction boundary."""
+        require_role(actor, Role.HR, Role.OPERATOR, Role.SERVICE)
+        key = idempotency_key.strip()
+        if len(key) < 8 or len(key) > 300:
+            raise ValueError("Internal idempotency key must be between 8 and 300 characters")
+        existing = connection.execute(
+            "SELECT id FROM cases WHERE organization_id='local' AND idempotency_key=?",
+            (key,),
+        ).fetchone()
+        if existing:
+            return str(existing["id"])
+
+        now = iso_now()
+        created_at = datetime.fromisoformat(now)
+        if request.retention_until is None:
+            retention_until = created_at + timedelta(days=self.settings.default_retention_days)
+            retention_policy_id = self.settings.default_retention_policy_id
+        else:
+            retention_until = request.retention_until.astimezone(UTC)
+            if retention_until <= created_at:
+                raise ValueError("retention_until must be in the future")
+            if retention_until > created_at + timedelta(days=self.settings.max_retention_days):
+                raise ValueError("retention_until exceeds the configured maximum")
+            retention_policy_id = request.retention_policy_id or "explicit"
+        case_id = new_id()
+        connection.execute(
+            """
+            INSERT INTO cases
+            (id, organization_id, idempotency_key, subject_email, subject_name,
+             transfer_owner, effective_at, risk_tier, provider, state, created_by,
+             created_at, updated_at, retention_until, retention_policy_id)
+            VALUES (?, 'local', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                case_id,
+                key,
+                normalize_email(request.subject_email),
+                request.subject_name.strip(),
+                normalize_email(request.transfer_owner),
+                request.effective_at.astimezone(UTC).isoformat(),
+                request.risk_tier.value,
+                request.provider,
+                CaseState.RECEIVED.value,
+                actor.id,
+                now,
+                now,
+                retention_until.isoformat(),
+                retention_policy_id,
+            ),
+        )
+        append_event(
+            connection,
+            case_id=case_id,
+            actor_id=actor.id,
+            event_type="case.received",
+            payload={
+                "idempotency_key": key,
+                "provider": request.provider,
+                "risk_tier": request.risk_tier.value,
+            },
+        )
+        append_event(
+            connection,
+            case_id=case_id,
+            actor_id=actor.id,
+            event_type="retention.snapshot_created",
+            payload={
+                "retention_until": retention_until.isoformat(),
+                "retention_policy_id": retention_policy_id,
+            },
+        )
+        return case_id
 
     def plan_case(self, actor: Actor, case_id: str) -> dict[str, Any]:
         require_role(actor, Role.OPERATOR)
@@ -375,51 +415,47 @@ class WorkflowService:
             if control is None or not bool(control["manual"]):
                 raise NotFoundError("Manual control was not found")
             now = iso_now()
-            with transaction(connection):
-                connection.execute(
-                    "UPDATE controls SET state=?, updated_at=? WHERE id=?",
-                    (ControlState.VERIFIED.value, now, control_id),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO observations
-                    (id, case_id, control_id, provider, external_id, observed_json,
-                     satisfied, quality, created_at)
-                    VALUES (?, ?, ?, 'manual', NULL, ?, 1, 'human_attested', ?)
-                    """,
-                    (
-                        new_id(),
-                        case_id,
-                        control_id,
-                        canonical_json({"evidence_note": evidence_note.strip()}),
-                        now,
-                    ),
-                )
-                connection.execute(
-                    """
-                    UPDATE exceptions SET status='resolved', resolution_note=?, updated_at=?
-                    WHERE control_id=? AND status='open'
-                    """,
-                    (evidence_note.strip(), now, control_id),
-                )
-                append_event(
-                    connection,
-                    case_id=case_id,
-                    actor_id=actor.id,
-                    event_type="control.manual_completed",
-                    payload={"control_id": control_id, "evidence_note": evidence_note.strip()},
-                )
-                new_state = self._refresh_case_state(connection, case_id, actor.id)
-            if new_state is CaseState.COMPLETED:
-                _, digest = write_evidence(connection, self.settings, case_id)
+            try:
                 with transaction(connection):
+                    connection.execute(
+                        "UPDATE controls SET state=?, updated_at=? WHERE id=?",
+                        (ControlState.VERIFIED.value, now, control_id),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO observations
+                        (id, case_id, control_id, provider, external_id, observed_json,
+                         satisfied, quality, created_at)
+                        VALUES (?, ?, ?, 'manual', NULL, ?, 1, 'human_attested', ?)
+                        """,
+                        (
+                            new_id(),
+                            case_id,
+                            control_id,
+                            canonical_json({"evidence_note": evidence_note.strip()}),
+                            now,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE exceptions SET status='resolved', resolution_note=?, updated_at=?
+                        WHERE control_id=? AND status='open'
+                        """,
+                        (evidence_note.strip(), now, control_id),
+                    )
                     append_event(
                         connection,
                         case_id=case_id,
                         actor_id=actor.id,
-                        event_type="evidence.generated",
-                        payload={"sha256": digest},
+                        event_type="control.manual_completed",
+                        payload={"control_id": control_id, "evidence_note": evidence_note.strip()},
                     )
+                    new_state = self._refresh_case_state(connection, case_id, actor.id)
+                    if new_state is CaseState.COMPLETED:
+                        self._write_completed_evidence(connection, case_id, actor.id)
+            except ConfigurationError:
+                self._record_evidence_failure(connection, case_id, control_id, actor.id)
+                raise
             return self.case_view(case_id, connection=connection)
         finally:
             connection.close()
@@ -472,16 +508,8 @@ class WorkflowService:
                     },
                 )
                 new_state = self._refresh_case_state(connection, case_id, actor.id)
-            if new_state is CaseState.COMPLETED:
-                _, digest = write_evidence(connection, self.settings, case_id)
-                with transaction(connection):
-                    append_event(
-                        connection,
-                        case_id=case_id,
-                        actor_id=actor.id,
-                        event_type="evidence.generated",
-                        payload={"sha256": digest},
-                    )
+                if new_state is CaseState.COMPLETED:
+                    self._write_completed_evidence(connection, case_id, actor.id)
             return self.case_view(case_id, connection=connection)
         finally:
             connection.close()
@@ -587,6 +615,87 @@ class WorkflowService:
             )
         return new_state
 
+    def _write_completed_evidence(
+        self,
+        connection: sqlite3.Connection,
+        case_id: str,
+        actor_id: str | None,
+    ) -> str:
+        evidence_path, manifest_path, digest = write_evidence_v2(connection, self.settings, case_id)
+        write_evidence(connection, self.settings, case_id)
+        artifact = connection.execute(
+            """
+            SELECT signing_status, signing_key_id, public_key_fingerprint
+            FROM evidence_artifacts
+            WHERE case_id=? AND schema_version=2 AND evidence_sha256=?
+            """,
+            (case_id, digest),
+        ).fetchone()
+        append_event(
+            connection,
+            case_id=case_id,
+            actor_id=actor_id,
+            event_type="evidence.generated",
+            payload={
+                "schema_version": 2,
+                "evidence_sha256": digest,
+                "evidence_path": str(evidence_path),
+                "manifest_path": str(manifest_path),
+                "signing_status": artifact["signing_status"],
+                "signing_key_id": artifact["signing_key_id"],
+                "public_key_fingerprint": artifact["public_key_fingerprint"],
+            },
+        )
+        return digest
+
+    def _record_evidence_failure(
+        self,
+        connection: sqlite3.Connection,
+        case_id: str,
+        control_id: str,
+        actor_id: str | None,
+    ) -> None:
+        now = iso_now()
+        with transaction(connection):
+            existing = connection.execute(
+                """
+                SELECT id FROM exceptions
+                WHERE case_id=? AND control_id=? AND category='evidence_signing' AND status='open'
+                """,
+                (case_id, control_id),
+            ).fetchone()
+            if existing is None:
+                exception_id = new_id()
+                connection.execute(
+                    """
+                    INSERT INTO exceptions (
+                        id, case_id, control_id, action_id, category, retryable, status,
+                        summary, created_at, updated_at
+                    ) VALUES (?, ?, ?, NULL, 'evidence_signing', 1, 'open', ?, ?, ?)
+                    """,
+                    (
+                        exception_id,
+                        case_id,
+                        control_id,
+                        "Evidence signing configuration prevented completion",
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                exception_id = str(existing["id"])
+            connection.execute(
+                "UPDATE cases SET state='exception', updated_at=?, completed_at=NULL WHERE id=?",
+                (now, case_id),
+            )
+            append_event(
+                connection,
+                case_id=case_id,
+                actor_id=actor_id,
+                event_type="evidence.failed",
+                payload={"exception_id": exception_id, "reason_code": "signing_configuration"},
+            )
+
     def case_view(self, case_id: str, *, connection: sqlite3.Connection | None = None) -> dict[str, Any]:
         own_connection = connection is None
         connection = connection or connection_for(self.settings)
@@ -617,6 +726,13 @@ class WorkflowService:
                     "SELECT * FROM exceptions WHERE case_id=? ORDER BY created_at", (case_id,)
                 ).fetchall()
             ]
+            payload["legal_holds"] = [
+                {key: row[key] for key in row.keys()}
+                for row in connection.execute(
+                    "SELECT * FROM legal_holds WHERE case_id=? ORDER BY created_at",
+                    (case_id,),
+                ).fetchall()
+            ]
             return payload
         finally:
             if own_connection:
@@ -643,10 +759,10 @@ class WorkflowService:
         finally:
             connection.close()
 
-    def metrics(self) -> dict[str, int]:
+    def metrics(self) -> dict[str, int | float]:
         connection = connection_for(self.settings)
         try:
-            result: dict[str, int] = {}
+            result: dict[str, int | float] = {}
             for row in connection.execute("SELECT state, COUNT(*) AS count FROM cases GROUP BY state").fetchall():
                 result[f"cases_{row['state']}"] = int(row["count"])
             result["exceptions_open"] = int(
@@ -654,6 +770,64 @@ class WorkflowService:
             )
             result["jobs_queued"] = int(
                 connection.execute("SELECT COUNT(*) FROM jobs WHERE status='queued'").fetchone()[0]
+            )
+            for row in connection.execute("SELECT status, COUNT(*) AS count FROM jobs GROUP BY status").fetchall():
+                result[f"jobs_{row['status']}"] = int(row["count"])
+            for row in connection.execute(
+                "SELECT evidence_quality, state, COUNT(*) AS count FROM controls GROUP BY evidence_quality, state"
+            ).fetchall():
+                result[f"controls_{row['evidence_quality']}_{row['state']}"] = int(row["count"])
+            result["exceptions_overdue"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM exceptions WHERE status='open' AND due_at IS NOT NULL AND due_at<?",
+                    (iso_now(),),
+                ).fetchone()[0]
+            )
+            for status_name in ("signed", "unsigned", "failed", "legacy"):
+                result[f"evidence_{status_name}"] = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM evidence_artifacts WHERE signing_status=?",
+                        (status_name,),
+                    ).fetchone()[0]
+                )
+            result["evidence_failed"] += int(
+                connection.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='evidence.failed'").fetchone()[0]
+            )
+            now = datetime.now(UTC)
+            horizon = now + timedelta(days=self.settings.retention_expiring_horizon_days)
+            result["cases_retention_expiring"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM cases WHERE retention_until>? AND retention_until<=?",
+                    (now.isoformat(), horizon.isoformat()),
+                ).fetchone()[0]
+            )
+            result["cases_retention_expired"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM cases WHERE retention_until IS NOT NULL AND retention_until<=?",
+                    (now.isoformat(),),
+                ).fetchone()[0]
+            )
+            result["webhook_deliveries_accepted"] = int(
+                connection.execute("SELECT COUNT(*) FROM webhook_deliveries WHERE status='accepted'").fetchone()[0]
+            )
+            result["webhook_replays_suppressed"] = int(
+                connection.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='webhook.replayed'").fetchone()[
+                    0
+                ]
+            )
+            result["webhook_conflicts"] = int(
+                connection.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='webhook.conflict'").fetchone()[
+                    0
+                ]
+            )
+            result["webhook_authenticated_rejections"] = int(
+                connection.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='webhook.rejected'").fetchone()[
+                    0
+                ]
+            )
+            oldest = connection.execute("SELECT MIN(available_at) FROM jobs WHERE status='queued'").fetchone()[0]
+            result["oldest_queued_job_age_seconds"] = (
+                max(0.0, (now - datetime.fromisoformat(oldest)).total_seconds()) if oldest else 0.0
             )
             return result
         finally:

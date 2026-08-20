@@ -16,7 +16,6 @@ from offboardproof.enums import (
     OutcomeKind,
 )
 from offboardproof.errors import ConfigurationError, ConflictError, ProviderError
-from offboardproof.evidence import write_evidence
 from offboardproof.providers.base import ActionRequest, Observation
 from offboardproof.providers.factory import get_provider
 from offboardproof.service import WorkflowService
@@ -277,15 +276,8 @@ class Worker:
                 },
             )
             new_state = self.service._refresh_case_state(connection, action["case_id"], actor_id=None)
-        if new_state.value == "completed":
-            _, digest = write_evidence(connection, self.settings, action["case_id"])
-            with transaction(connection):
-                append_event(
-                    connection,
-                    case_id=action["case_id"],
-                    event_type="evidence.generated",
-                    payload={"sha256": digest},
-                )
+            if new_state.value == "completed":
+                self.service._write_completed_evidence(connection, action["case_id"], actor_id=None)
 
     def _handle_provider_error(
         self,

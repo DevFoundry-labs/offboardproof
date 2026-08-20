@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +15,13 @@ from offboardproof.enums import ApprovalDecision, RiskTier, Role
 from offboardproof.providers.mock import MockProvider
 from offboardproof.schemas import CaseCreate
 from offboardproof.service import WorkflowService
+
+
+def write_owner_only(path: Path, value: bytes) -> None:
+    """Write secret test material with the same permissions production requires."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(value)
 
 
 @dataclass
